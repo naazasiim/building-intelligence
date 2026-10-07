@@ -30,7 +30,7 @@ curl -s http://127.0.0.1:8000/v1/query \
   -d '{"question": "What is theft?", "pattern": "semantic"}'
 ```
 
-Expected: `"status":"not_implemented"`, `"message":"Pattern 'semantic' is not implemented yet..."`.
+Expected (Story 2.3, needs `.env` credentials and Story 2.2 data): `"status":"ok"` with ranked passages in `results` and a populated `trace`. Without credentials: HTTP 503 `retrieval_not_ready`.
 
 ### Query — hybrid
 
@@ -182,3 +182,24 @@ MONGODB_URI= uv run python -m building_with_rag.ingestion.ingest
 ```
 
 Expected: stops at step 1 with `MongoDB unavailable: MONGODB_URI is empty. Set it in .env and re-run.` Nothing is written and no Voyage call is made.
+## Story 2.3 — Semantic Retrieval
+
+What it adds: `POST /v1/query` with `pattern: "semantic"` embeds the question, runs a MongoDB vector search, and returns ranked source passages.
+
+Prerequisite: Story 2.2 data ingested, `MONGODB_URI` and `VOYAGE_API_KEY` set in `.env`, API running on port 8000.
+
+```bash
+# Success
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "What is the punishment for theft?", "pattern": "semantic", "limit": 3}'
+
+# No results (IPC is repealed, so these filters match nothing)
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "theft", "pattern": "semantic", "filters": {"act": ["IPC_1860"], "status": ["in_force"]}}'
+
+# Failure (unsupported filter value)
+curl -s -w ' HTTP %{http_code}\n' http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "theft", "pattern": "semantic", "filters": {"access_level": ["restricted"]}}'
+```
+
+Expected: first returns `"pattern":"semantic"`, `"status":"ok"`, at most 3 `results` in non-increasing `score` order, and a populated `trace`. Second returns HTTP 200, `"status":"no_results"`, empty `results`. Third returns HTTP 422 validation error. Without credentials the semantic query returns HTTP 503 `retrieval_not_ready`. Output includes full passage text; truncate `text` when inspecting.

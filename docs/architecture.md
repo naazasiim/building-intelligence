@@ -42,7 +42,7 @@ One shared registry (single source of truth) holds only:
 | decomposition | `rag-decomposition` |
 | hyde | `rag-hyde` |
 
-All modes return honest `not_implemented` placeholder results until their own stories add behavior.
+`semantic` is real on `POST /v1/query` (Story 2.3). Every other mode, and chat for every mode including `rag-semantic`, still returns an honest `not_implemented` placeholder until its own story.
 
 ## API contracts
 
@@ -68,12 +68,12 @@ The classroom seed may resolve only its fixed local demo caller, but keeps `call
 
 ### `RetrievedChunk`
 
-A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text`, `heading`, `score`, and available source fields. Later stories add only the existing hybrid/rerank fields.
+A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text`, `heading`, `score`, and optional source fields (`chunk_index`, `act_label`, `status`, `chapter`, `chapter_title`, `section_number`, `source_pdf`, `source_sha256`, `needs_review`; null when unavailable). Later stories add only the existing hybrid/rerank fields.
 
 ### Endpoints
 
 - `GET /healthz` — safe, no credentials required.
-- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult` placeholder per mode via one shared `run_pattern` path.
+- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
 - `GET /v1/models` — lists the six `rag-<pattern>` model IDs.
 - `POST /v1/chat/completions` — OpenAI-compatible, text-only `ChatCompletionRequest`: `model`, `messages` with `system`/`developer`/`user`/`assistant` roles, `stream`, `n`, and optional strict `rag_options` (`pattern`, list filters, `limit`, `required_acts`, `chapter`).
 
@@ -90,6 +90,26 @@ The trainer-supplied Open WebUI bundle is the chat client, run separately from t
 - `.env` is untracked; secrets are never committed.
 - The application must start with no database or model credentials and expose a safe `GET /healthz`.
 - Canonical environment values are defined in `.env.example`.
+
+## Semantic retrieval (Story 2.3)
+
+Module: `src/building_with_rag/retrieval/semantic.py`, called from `routes/query.py` for `pattern: "semantic"`.
+
+Flow: validate → scope filters → embed query → `$vectorSearch` → resolve chunk/section → `QueryResult`.
+
+- Validate: `SemanticFilters` forbids unknown fields and accepts only known plain-string values. `caller_id` must be omitted or equal `WEBUI_DEMO_CALLER_ID`; `required_acts` and `chapter` are rejected (HTTP 422). `generate_answer` is accepted but ignored (noted in `trace.ignored`; `generation` stays null).
+- Scope: server fixes `access_level` to `["public"]`; caller `act`/`status` lists only narrow it (`$in` inside the `$vectorSearch` `filter`).
+- Embed: raw question, `voyage-3.5`, `input_type="query"`, 1,024 dimensions checked. Clients are created lazily with bounded timeouts; `/healthz` needs no credentials.
+- Search: `vector_index`, `limit` from the request, `numCandidates = clamp(limit * 10, 50, 200)`. Chunks are returned in score order (not de-duplicated by section).
+- Resolve: `chunk_id` → `chunks` (text) and `sections` (heading, chapter, source fields). Unresolvable hits are omitted and counted in `trace.unresolved_hits`.
+
+Outcomes: `ok` (passages returned); `no_results` (HTTP 200, filters match nothing). No score cutoff; scores rank similarity only. HTTP 503 `retrieval_not_ready` (missing credentials, index absent/not queryable, empty embeddings, model/dimension mismatch); HTTP 502 `retrieval_upstream_error` (Voyage/MongoDB error during a query).
+
+Diagnostic command (text truncated):
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft?", "pattern": "semantic", "limit": 3}'   | jq '{status, trace, results: [.results[] | {chunk_id, section_id, act, heading, score, text: .text[:80]}]}'
+```
 
 ## Corpus
 
