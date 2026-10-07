@@ -97,7 +97,7 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
 Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet`.
@@ -107,7 +107,7 @@ Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contai
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -127,7 +127,7 @@ Expected: 400 with `"type":"invalid_request_error"`, `"code":"model_not_found"`.
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
 Expected: 400 with `"code":"missing_user_message"`.
@@ -227,4 +227,15 @@ curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
   -d '{"question": "theft", "pattern": "semantic", "limit": 3}' | jq '{status, generation}'
 ```
 
-Expected: first returns `"status":"ok"`, `generation.outcome` `"answered"`, non-empty `text`, claims with evidence labels, and citations whose `section_id` prefix matches `act` (`bns:` ↔ `BNS_2023`). Second returns `"insufficient_evidence"`, empty `text`, no citations, while `results` are still returned. Third returns `"generation": null`. With `GENERATION_API_KEY` empty (restart the API), the first request returns HTTP 200 with `outcome` `"unavailable"` and empty `text`; `results` stay present. Other modes on `/v1/query` still return `not_implemented`, and chat `rag-semantic` keeps its placeholder until Story 3.2.
+Expected: first returns `"status":"ok"`, `generation.outcome` `"answered"`, non-empty `text`, claims with evidence labels, and citations whose `section_id` prefix matches `act` (`bns:` ↔ `BNS_2023`). Second returns `"insufficient_evidence"`, empty `text`, no citations, while `results` are still returned. Third returns `"generation": null`. With `GENERATION_API_KEY` empty (restart the API), the first request returns HTTP 200 with `outcome` `"unavailable"` and empty `text`; `results` stay present. Other modes on `/v1/query` still return `not_implemented`; chat `rag-semantic` is real since Story 3.2.
+
+## Story 3.2 — Streamed Answers with Confidence
+
+Run in Open WebUI (`Building with RAG` model, Pipe re-pasted) or the streamed curl form from the story (bounded with `head -c 1500`).
+
+1. "What is the punishment for theft under the BNS?" → `DRAFT — checking evidence`, labelled text, `Evidence check passed — confidence: high`, `Sources:` lines. `/v1/query` (`generate_answer: true`) agrees on outcome and citations.
+2. "What is the GST rate on restaurant services?" → one insufficient-evidence sentence, no confidence; `/v1/query` shows `insufficient_evidence` with `results` intact.
+3. Stream has role chunk, content chunks, `finish_reason: "stop"`, `[DONE]` last. With `CAPSTONE_API_KEY` set, a wrong Bearer on chat → 401 `invalid_api_key`; unset → works.
+4. `rag-hybrid` on chat and `/v1/query` → `not_implemented`; `generate_answer` omitted → `generation: null`.
+
+Offline: `uv run pytest tests/test_streamed_confidence.py`

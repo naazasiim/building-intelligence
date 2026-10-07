@@ -58,6 +58,14 @@ only allowed from `127.0.0.1`).
    save, and send a question. Hover the chip and click `×` to turn it off;
    re-enable it from the integrations menu next to `+`.
 
+## Reading answers
+
+- `DRAFT — checking evidence` starts every attempt; streamed text cannot be retracted, so a failed draft stays visible and is followed by `Check failed: … Retrying (attempt 2 of 2)…` and a new draft.
+- Passed: `Evidence check passed — confidence: high` and `Sources:` lines. Failed: `DRAFT — low confidence, not the final answer.` with the reason; do not treat it as validated.
+- If the provider fails mid-answer the text is an unchecked draft.
+- The `capstone_api_key` Valve must equal the app's `CAPSTONE_API_KEY` when that is set; leave both empty otherwise.
+- After the Pipe changes, re-paste `building_with_rag_ui_preview.py` via Function Menu → Edit and save (Open WebUI keeps its own copy).
+
 ## Safe cleanup
 
 If you want to remove this incomplete local shell, first stop the server, then

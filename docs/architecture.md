@@ -42,7 +42,7 @@ One shared registry (single source of truth) holds only:
 | decomposition | `rag-decomposition` |
 | hyde | `rag-hyde` |
 
-`semantic` is real on `POST /v1/query` (Story 2.3). Every other mode, and chat for every mode including `rag-semantic`, still returns an honest `not_implemented` placeholder until its own story.
+`semantic` is real on `POST /v1/query` (Story 2.3). `rag-semantic` on chat runs the same real path (Story 3.2). Every other mode, on query and chat, still returns an honest `not_implemented` placeholder until its own story.
 
 ## API contracts
 
@@ -75,9 +75,9 @@ A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text
 - `GET /healthz` — safe, no credentials required.
 - `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
 - `GET /v1/models` — lists the six `rag-<pattern>` model IDs.
-- `POST /v1/chat/completions` — OpenAI-compatible, text-only `ChatCompletionRequest`: `model`, `messages` with `system`/`developer`/`user`/`assistant` roles, `stream`, `n`, and optional strict `rag_options` (`pattern`, list filters, `limit`, `required_acts`, `chapter`).
+- `POST /v1/chat/completions` — OpenAI-compatible, text-only `ChatCompletionRequest`: `model`, `messages` with `system`/`developer`/`user`/`assistant` roles, `stream`, `n`, and optional strict `rag_options` (`pattern`, flat or nested `filters.{act,status}`, `limit`, `required_acts`, `chapter`).
 
-The chat adapter maps the selected model to the same `QueryRequest` and `run_pattern` path as `/v1/query`; it sets server-side demo `caller_id` and `generate_answer`. Supports normal OpenAI Chat Completions JSON responses and role/content/stop frames, plus the OpenAI-style error envelope before streaming begins. No duplicated implementations, no custom SSE events that Open WebUI cannot render.
+The chat adapter maps the selected model to the same `QueryRequest` and `pipeline.retrieve` + `answer_events` path as `/v1/query`; it sets server-side demo `caller_id` and `generate_answer`. Supports normal OpenAI Chat Completions JSON responses and role/content/stop frames, plus the OpenAI-style error envelope before streaming begins. Open WebUI shows readable text only: streamed answer text, DRAFT/retry lines, and a confidence/sources footer. No duplicated implementations, no custom SSE events that Open WebUI cannot render.
 
 ## Open WebUI (trainer-supplied, separate client)
 
@@ -121,7 +121,7 @@ Flow: semantic retrieval result → bounded labelled context (`E1`…, max 5 pas
 - HTTP 200 for all four; `status` stays the retrieval status and `results` are always returned. Messages and traces never contain the proxy URL, key, prompt text, or vectors; the model `reason` is kept in `generation.trace` only.
 - `GenerationResult` gains optional fields: `outcome`, `claims`, `citations`, `supporting_passages`, `provider`, `trace`, `context_outcome` (`text`/`model` unchanged).
 - Evidence is untrusted source text, never instructions. No claims of current legal applicability beyond the supplied BNS/IPC documents.
-- Deferred to Story 3.2: chat answer rendering (chat keeps its placeholder), streaming, confidence.
+- Story 3.2 replaced the strict JSON output with streamed plain text (below); outcomes and citation resolution are unchanged.
 
 ## Corpus
 
@@ -150,3 +150,15 @@ Each record has 14 fields: `section_id`, `act`, `act_label`, `status`, `chapter`
 - **IPC footnotes**: Amendment footnotes and historical annotations are interleaved with section text and may appear as inline artifacts in section `text`.
 - **BNS chapter markers**: Chapter boundaries are detected from `CHAPTER <roman>` lines in the body text. The BNS index (pages 2–19) provides section headings; the correspondence table (pages 20–73) is skipped.
 - **Source-hash safety rule**: If a source PDF hash changes, the corpus for that act is regenerated as an atomic replacement. Records from different PDF versions are never mixed in one corpus file.
+
+## Streamed answers and confidence (Story 3.2)
+
+- Shared path (`pipeline.py`): `retrieve(request)` → `answer_events(question, retrieval)`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events as SSE and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation. `QueryError` is raised before any streaming starts.
+- Event flow: role chunk → one content chunk per piece → empty delta with `finish_reason: "stop"` → `[DONE]`. `n>1` repeats the same piece in every choice. `stream: false` returns the same text in one JSON response.
+- Model output is plain text with inline labels (`[E1]`); `INSUFFICIENT_EVIDENCE: <reason>` is buffered and never streamed as an answer.
+- `MAX_ATTEMPTS = 2`. Per attempt, in order: `citation_labels` (every cited label was supplied; never rewritten), `claim_cited` (every sentence/bullet has a label, text non-empty), `support` (one non-streamed validator call, strict JSON, run only when the first two pass). A retry runs only after a failed attempt and receives the plain-language issues.
+- New optional `GenerationResult` fields: `confidence` (`high` = final attempt passed; `low` = final attempt failed; null = nothing judged), `issues` (all failed checks across attempts), `attempts` (`attempt`, `status` passed|failed|unjudged, `chars`, `latency_ms`), `draft_answer` (last text that did not pass), `low_confidence_reason`.
+- Outcome mapping: passed → `answered` + high; failed final → `malformed`, empty `text`, `draft_answer`, low; provider failure → `unavailable`; validator unreachable → `unavailable` + draft; validator invalid reply → `malformed` + draft, no confidence; `insufficient_evidence` unchanged.
+- Chat labels: each attempt starts `DRAFT — checking evidence`; `Check failed: … Retrying (attempt 2 of 2)…`; footer `Evidence check passed — confidence: high` + `Sources:`; failed final `DRAFT — low confidence, not the final answer.`; insufficient evidence is one plain sentence.
+- Failure after text began: one final line `Answer generation unavailable — the text above is an unchecked draft.`, then stop and `[DONE]` (HTTP 200). Failure before any text: `Answer generation unavailable.`
+- `CAPSTONE_API_KEY`: when non-empty, `/v1/chat/completions` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). Empty = no check. `/v1/query`, `/v1/models`, `/healthz` are unchanged.

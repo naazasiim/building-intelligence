@@ -89,6 +89,19 @@ class Citation(BaseModel):
     source_pdf: str | None = None
 
 
+class GenerationIssue(BaseModel):
+    attempt: int
+    check: str
+    detail: str
+
+
+class GenerationAttempt(BaseModel):
+    attempt: int
+    status: Literal["passed", "failed", "unjudged"]
+    chars: int = 0
+    latency_ms: float = 0.0
+
+
 class GenerationResult(BaseModel):
     text: str = ""
     model: str | None = None
@@ -100,6 +113,12 @@ class GenerationResult(BaseModel):
     provider: str | None = None
     trace: dict = Field(default_factory=dict)
     context_outcome: Literal["assembled", "empty"] | None = None
+    # Story 3.2 additive fields.
+    confidence: Literal["high", "low"] | None = None
+    issues: list[GenerationIssue] = Field(default_factory=list)
+    attempts: list[GenerationAttempt] = Field(default_factory=list)
+    draft_answer: str = ""
+    low_confidence_reason: str | None = None
 
 
 class QueryResult(BaseModel):
@@ -117,10 +136,18 @@ class QueryResult(BaseModel):
     hyde_hypothetical_text_debug: str | None = None
 
 
+class ChatFilters(BaseModel):
+    """Nested filters as sent by the Open WebUI Pipe."""
+
+    act: list[str] = Field(default_factory=list)
+    status: list[str] = Field(default_factory=list)
+
+
 class ChatRagOptions(BaseModel):
     pattern: Pattern = Pattern.SEMANTIC
     act: list[str] = Field(default_factory=list)
     status: list[str] = Field(default_factory=list)
+    filters: ChatFilters | None = None
     access_level: list[str] = Field(default_factory=list)
     limit: int = Field(default=5, ge=1, le=20)
     required_acts: list[str] | None = None
