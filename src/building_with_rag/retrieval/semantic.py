@@ -178,11 +178,7 @@ def run_semantic(request: QueryRequest) -> QueryResult:
         "filters": filters,
         "caller_id": caller_id,
         "result_count": 0,
-        "ignored": (
-            ["generate_answer: no answer is generated in semantic retrieval; generation is null"]
-            if request.generate_answer
-            else []
-        ),
+        "ignored": [],
         "unresolved_hits": 0,
     }
 

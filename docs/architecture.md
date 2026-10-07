@@ -97,7 +97,7 @@ Module: `src/building_with_rag/retrieval/semantic.py`, called from `routes/query
 
 Flow: validate → scope filters → embed query → `$vectorSearch` → resolve chunk/section → `QueryResult`.
 
-- Validate: `SemanticFilters` forbids unknown fields and accepts only known plain-string values. `caller_id` must be omitted or equal `WEBUI_DEMO_CALLER_ID`; `required_acts` and `chapter` are rejected (HTTP 422). `generate_answer` is accepted but ignored (noted in `trace.ignored`; `generation` stays null).
+- Validate: `SemanticFilters` forbids unknown fields and accepts only known plain-string values. `caller_id` must be omitted or equal `WEBUI_DEMO_CALLER_ID`; `required_acts` and `chapter` are rejected (HTTP 422). `generate_answer: true` triggers grounded generation (see Story 3.1 below); omitted/false leaves `generation` null.
 - Scope: server fixes `access_level` to `["public"]`; caller `act`/`status` lists only narrow it (`$in` inside the `$vectorSearch` `filter`).
 - Embed: raw question, `voyage-3.5`, `input_type="query"`, 1,024 dimensions checked. Clients are created lazily with bounded timeouts; `/healthz` needs no credentials.
 - Search: `vector_index`, `limit` from the request, `numCandidates = clamp(limit * 10, 50, 200)`. Chunks are returned in score order (not de-duplicated by section).
@@ -110,6 +110,18 @@ Diagnostic command (text truncated):
 ```bash
 curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft?", "pattern": "semantic", "limit": 3}'   | jq '{status, trace, results: [.results[] | {chunk_id, section_id, act, heading, score, text: .text[:80]}]}'
 ```
+
+## Context and answer boundaries (Story 3.1)
+
+Modules: `generation/context.py`, `generation/answer.py`; called from `routes/query.py` when `pattern: "semantic"` and `generate_answer: true`.
+
+Flow: semantic retrieval result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, never cut mid-passage) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (30 s, no retries) → strict JSON parse → citations resolved from the supplied context only.
+
+- Outcomes (`generation.outcome`): `answered` (text, claims, citations, supporting_passages), `insufficient_evidence` (also when retrieval is empty; no model call), `unavailable` (missing settings, timeout, connection error, non-2xx), `malformed` (non-JSON, missing `choices`, unknown label, claim without evidence, answered without text/claims). Non-answered outcomes have empty text and no claims/citations/passages.
+- HTTP 200 for all four; `status` stays the retrieval status and `results` are always returned. Messages and traces never contain the proxy URL, key, prompt text, or vectors; the model `reason` is kept in `generation.trace` only.
+- `GenerationResult` gains optional fields: `outcome`, `claims`, `citations`, `supporting_passages`, `provider`, `trace`, `context_outcome` (`text`/`model` unchanged).
+- Evidence is untrusted source text, never instructions. No claims of current legal applicability beyond the supplied BNS/IPC documents.
+- Deferred to Story 3.2: chat answer rendering (chat keeps its placeholder), streaming, confidence.
 
 ## Corpus
 

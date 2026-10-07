@@ -203,3 +203,28 @@ curl -s -w ' HTTP %{http_code}\n' http://127.0.0.1:8000/v1/query -H "Content-Typ
 ```
 
 Expected: first returns `"pattern":"semantic"`, `"status":"ok"`, at most 3 `results` in non-increasing `score` order, and a populated `trace`. Second returns HTTP 200, `"status":"no_results"`, empty `results`. Third returns HTTP 422 validation error. Without credentials the semantic query returns HTTP 503 `retrieval_not_ready`. Output includes full passage text; truncate `text` when inspecting.
+
+
+## Story 3.1 — Grounded Answer Generation
+
+What it adds: `POST /v1/query` with `pattern: "semantic"` and `generate_answer: true` returns a grounded answer with citations, or an honest `insufficient_evidence`/`unavailable`/`malformed` outcome in `generation`.
+
+Prerequisite: Story 2.3 prerequisites plus `GENERATION_API_BASE_URL` and `GENERATION_API_KEY` set in `.env`, API running on port 8000. The `jq` filters below truncate passage text.
+
+```bash
+# Answerable
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "What is the punishment for theft under the BNS?", "pattern": "semantic", "limit": 5, "generate_answer": true}' \
+  | jq '{status, g: (.generation | {outcome, model, text: (.text[:300]), claims: [.claims[] | {t: .text[:80], e: .evidence_labels}], citations: [.citations[] | {label, chunk_id, section_id, act}]})}'
+
+# Unsupported question
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "What is the GST rate on restaurant services?", "pattern": "semantic", "limit": 5, "generate_answer": true}' \
+  | jq '{status, g: (.generation | {outcome, text, citations}), results: (.results | length)}'
+
+# Generation not requested
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question": "theft", "pattern": "semantic", "limit": 3}' | jq '{status, generation}'
+```
+
+Expected: first returns `"status":"ok"`, `generation.outcome` `"answered"`, non-empty `text`, claims with evidence labels, and citations whose `section_id` prefix matches `act` (`bns:` ↔ `BNS_2023`). Second returns `"insufficient_evidence"`, empty `text`, no citations, while `results` are still returned. Third returns `"generation": null`. With `GENERATION_API_KEY` empty (restart the API), the first request returns HTTP 200 with `outcome` `"unavailable"` and empty `text`; `results` stay present. Other modes on `/v1/query` still return `not_implemented`, and chat `rag-semantic` keeps its placeholder until Story 3.2.
