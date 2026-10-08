@@ -1,4 +1,4 @@
-"""Query endpoint: shared retrieve + answer_events path (semantic is real; other modes placeholder)."""
+"""Query endpoint: shared retrieve + answer_events path (semantic and hybrid are real; other modes placeholder)."""
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse

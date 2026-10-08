@@ -1,4 +1,4 @@
-"""Bounded, labelled evidence context built from semantic retrieval results."""
+"""Bounded, labelled evidence context built from semantic or hybrid retrieval results."""
 
 import time
 from dataclasses import dataclass, field

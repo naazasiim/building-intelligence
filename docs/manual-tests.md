@@ -37,10 +37,10 @@ Expected (Story 2.3, needs `.env` credentials and Story 2.2 data): `"status":"ok
 ```bash
 curl -s http://127.0.0.1:8000/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is theft?", "pattern": "hybrid"}'
+  -d '{"question": "What is theft?", "pattern": "hybrid", "limit": 3}'
 ```
 
-Expected: `"status":"not_implemented"`, message references `hybrid`.
+Expected (Story 4.1, needs `chunk_text_index`): `"status":"ok"` with fused passages; without the index, HTTP 503 `retrieval_not_ready`.
 
 ### Query — hybrid-reranked
 
@@ -97,7 +97,7 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
 Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet`.
@@ -107,7 +107,7 @@ Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contai
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -127,7 +127,7 @@ Expected: 400 with `"type":"invalid_request_error"`, `"code":"model_not_found"`.
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
 Expected: 400 with `"code":"missing_user_message"`.
@@ -236,6 +236,26 @@ Run in Open WebUI (`Building with RAG` model, Pipe re-pasted) or the streamed cu
 1. "What is the punishment for theft under the BNS?" → `DRAFT — checking evidence`, labelled text, `Evidence check passed — confidence: high`, `Sources:` lines. `/v1/query` (`generate_answer: true`) agrees on outcome and citations.
 2. "What is the GST rate on restaurant services?" → one insufficient-evidence sentence, no confidence; `/v1/query` shows `insufficient_evidence` with `results` intact.
 3. Stream has role chunk, content chunks, `finish_reason: "stop"`, `[DONE]` last. With `CAPSTONE_API_KEY` set, a wrong Bearer on chat → 401 `invalid_api_key`; unset → works.
-4. `rag-hybrid` on chat and `/v1/query` → `not_implemented`; `generate_answer` omitted → `generation: null`.
+4. `rag-hybrid-reranked` on chat and `/v1/query` → `not_implemented`; `generate_answer` omitted → `generation: null`.
 
 Offline: `uv run pytest tests/test_streamed_confidence.py`
+
+## Story 4.1 — Hybrid Search
+
+Adds `hybrid` mode (`rag-hybrid`): Atlas Search keyword results fused with semantic results by Reciprocal Rank Fusion. Needs the API running and `.env` set (`MONGODB_URI`, `VOYAGE_API_KEY`; `GENERATION_*` for answers).
+
+```bash
+# Create/reuse the keyword index (once)
+uv run python -m building_with_rag.ingestion.keyword_index
+
+# Success: hybrid query with generation
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "criminal breach of trust", "pattern": "hybrid", "limit": 5, "generate_answer": true}'
+
+# Failure: unsupported scope
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "theft", "pattern": "hybrid", "required_acts": ["BNS_2023"]}'
+
+# Chat, streaming
+curl -s http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json"   -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "criminal breach of trust"}], "stream": true}'
+```
+
+Expected: index command ends `chunk_text_index: READY (queryable)`. Query returns `"status":"ok"`, `"pattern":"hybrid"`, results with `fused_rank`/`semantic_rank`/`keyword_rank` and `score == fused_score`, and a cited answer when generation is configured. Unsupported scope returns HTTP 422 `invalid_request`; a missing keyword index returns 503 `retrieval_not_ready`. Chat streams DRAFT text, confidence/Sources footer, and ends with `data: [DONE]`.

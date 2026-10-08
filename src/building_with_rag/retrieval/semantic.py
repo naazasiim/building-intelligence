@@ -103,9 +103,9 @@ def validate_request(request: QueryRequest) -> None:
     if request.caller_id is not None and request.caller_id != effective_caller:
         problems.append("caller_id is not accepted for this server's caller")
     if request.required_acts:
-        problems.append("required_acts is not supported by semantic mode")
+        problems.append("required_acts is not supported by this mode")
     if request.chapter:
-        problems.append("chapter is not supported by semantic mode")
+        problems.append("chapter is not supported by this mode")
     if problems:
         raise RetrievalError(422, "invalid_request", "; ".join(problems) + ".")
 

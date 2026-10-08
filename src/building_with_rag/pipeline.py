@@ -9,11 +9,13 @@ from collections.abc import Iterator
 from building_with_rag.contracts import GenerationResult, QueryRequest, QueryResult
 from building_with_rag.generation.answer import Event, stream_answer
 from building_with_rag.registry import Pattern, run_pattern
+from building_with_rag.retrieval.hybrid import run_hybrid
 from building_with_rag.retrieval.semantic import RetrievalError as QueryError
 from building_with_rag.retrieval.semantic import run_semantic
 
 __all__ = ["QueryError", "answer_events", "chat_pieces", "drain", "retrieve"]
 
+REAL_PATTERNS = frozenset({Pattern.SEMANTIC.value, Pattern.HYBRID.value})
 UNAVAILABLE_AFTER_TEXT = "Answer generation unavailable — the text above is an unchecked draft."
 UNAVAILABLE = "Answer generation unavailable."
 MAX_REASON_CHARS = 200
@@ -22,12 +24,14 @@ MAX_REASON_CHARS = 200
 def retrieve(request: QueryRequest) -> QueryResult:
     if request.pattern is Pattern.SEMANTIC:
         return run_semantic(request)  # raises QueryError
+    if request.pattern is Pattern.HYBRID:
+        return run_hybrid(request)  # raises QueryError
     return QueryResult(**run_pattern(request.pattern, request.question, request.caller_id))
 
 
 def answer_events(question: str, retrieval: QueryResult) -> Iterator[Event]:
     """Text/notice events then one final event (value None for placeholder modes)."""
-    if retrieval.pattern != Pattern.SEMANTIC.value:
+    if retrieval.pattern not in REAL_PATTERNS:
         yield Event("text", retrieval.message)
         yield Event("final", None)
         return
