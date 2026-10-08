@@ -42,7 +42,7 @@ One shared registry (single source of truth) holds only:
 | decomposition | `rag-decomposition` |
 | hyde | `rag-hyde` |
 
-`semantic` (Story 2.3) and `hybrid` (Story 4.1) are real on `POST /v1/query`; `rag-semantic` and `rag-hybrid` on chat run the same real path (Stories 3.2, 4.1). Every other mode, on query and chat, still returns an honest `not_implemented` placeholder until its own story.
+`semantic` (Story 2.3), `hybrid` (Story 4.1) and `hybrid-reranked` (Story 4.2) are real on `POST /v1/query`; `rag-semantic`, `rag-hybrid` and `rag-hybrid-reranked` on chat run the same real path (Stories 3.2, 4.1, 4.2). Every other mode, on query and chat, still returns an honest `not_implemented` placeholder until its own story.
 
 ## API contracts
 
@@ -63,17 +63,17 @@ The classroom seed may resolve only its fixed local demo caller, but keeps `call
 
 - `pattern`, `status`, `message`, `trace`, `results`.
 - Optional `generation`.
-- Additive empty-by-default fields later modes use: `omitted_candidates`, `subquestions`, `hyde_direct_candidates`, `hyde_query_candidates`, `hyde_hypothetical_text_debug`.
+- Additive empty-by-default fields later modes use: `omitted_candidates` (used by `hybrid-reranked` for cut candidates), `subquestions`, `hyde_direct_candidates`, `hyde_query_candidates`, `hyde_hypothetical_text_debug`.
 - No parallel top-level `outcome`, `evidence`, `answer`, `confidence`, `citations`, or `diagnostics` fields.
 
 ### `RetrievedChunk`
 
-A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text`, `heading`, `score`, and optional source fields (`chunk_index`, `act_label`, `status`, `chapter`, `chapter_title`, `section_number`, `source_pdf`, `source_sha256`, `needs_review`; null when unavailable). Hybrid adds optional `semantic_score`, `semantic_rank`, `keyword_score`, `keyword_rank`, `fused_score`, `fused_rank` (null in semantic mode and for a route that did not return the chunk).
+A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text`, `heading`, `score`, and optional source fields (`chunk_index`, `act_label`, `status`, `chapter`, `chapter_title`, `section_number`, `source_pdf`, `source_sha256`, `needs_review`; null when unavailable). Hybrid adds optional `semantic_score`, `semantic_rank`, `keyword_score`, `keyword_rank`, `fused_score`, `fused_rank` (null in semantic mode and for a route that did not return the chunk). Story 4.2 adds optional `rerank_score`, `rerank_rank`, `omitted_reason` (null outside `hybrid-reranked`; rerank fields also null for candidates not sent to the re-ranker).
 
 ### Endpoints
 
 - `GET /healthz` — safe, no credentials required.
-- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic` and `hybrid`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
+- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic`, `hybrid` and `hybrid-reranked`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
 - `GET /v1/models` — lists the six `rag-<pattern>` model IDs.
 - `POST /v1/chat/completions` — OpenAI-compatible, text-only `ChatCompletionRequest`: `model`, `messages` with `system`/`developer`/`user`/`assistant` roles, `stream`, `n`, and optional strict `rag_options` (`pattern`, flat or nested `filters.{act,status}`, `limit`, `required_acts`, `chapter`).
 
@@ -89,7 +89,7 @@ The trainer-supplied Open WebUI bundle is the chat client, run separately from t
 
 - `.env` is untracked; secrets are never committed.
 - The application must start with no database or model credentials and expose a safe `GET /healthz`.
-- Canonical environment values are defined in `.env.example`.
+- Canonical environment values are defined in `.env.example`; `RERANK_API_KEY` (empty by default) is required only by `hybrid-reranked`.
 
 ## Semantic retrieval (Story 2.3)
 
@@ -129,11 +129,32 @@ Diagnostic (text truncated):
 curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question":"<q>","pattern":"hybrid","limit":5}'   | jq '{status, t: (.trace | {semantic, keyword, fusion, contribution}), r: [.results[] | {section_id, score, sr: .semantic_rank, kr: .keyword_rank, fr: .fused_rank, text: .text[:60]}]}'
 ```
 
+## Re-ranking (Story 4.2)
+
+Module: `retrieval/rerank.py`, `pattern: "hybrid-reranked"` (`rag-hybrid-reranked`); explicit selection only, no routing or fallback. Flow: `run_hybrid` (limit `RERANK_CANDIDATE_LIMIT`) → first `RERANK_SEND_LIMIT` candidates → one provider call → final evidence. Final evidence uses the shared `retrieve` + `answer_events` path.
+
+- Settings: `RERANK_API_BASE_URL` (`https://api.voyageai.com/v1`), `RERANK_API_KEY` (empty by default, required), `RERANK_MODEL_NAME` (`rerank-2.5`), `RERANK_REQUEST_TIMEOUT_SECONDS` (30), `RERANK_CANDIDATE_LIMIT` (20), `RERANK_SEND_LIMIT` (10), `RERANK_RETURN_LIMIT` (5). Valid when `1 <= RETURN <= SEND <= CANDIDATE <= 20` and timeout >= 1; otherwise 503 `retrieval_not_ready` naming the setting. Checked before any Voyage/MongoDB call.
+- Request: one `POST {RERANK_API_BASE_URL}/rerank` (`httpx`, Bearer key, `{model, query, documents}`, no `top_k`, no retries). Document = `"{heading}\n{chunk text}"`.
+- Reply validation: `data` non-empty list; each `index` an int in the sent range, unique; each `relevance_score` finite. Otherwise 502. Scores are never invented or defaulted.
+- Selection (`select_evidence`, pure): sent = first `SEND` by `fused_rank`; the rest are omitted `not_sent_to_reranker`. Sent are ordered by `relevance_score` desc, ties by `fused_rank`; `rerank_rank` is 1-based. Final = first `min(request.limit, RETURN)`; the rest are omitted `below_return_limit` (rerank fields kept).
+- Result: `results` ordered by `rerank_rank`, `score == rerank_score`, hybrid fields kept as the "before" evidence. `omitted_candidates` = all cut candidates in `fused_rank` order. Together they show every candidate's before (`fused_rank`/`fused_score`) and after (`rerank_rank`/`rerank_score`).
+- Trace: `mode`, `query`, `filters`, `caller_id`, `result_count`, `hybrid` (embedding, semantic, keyword, fusion, contribution, unresolved_hits), `rerank` (model, limits, counts `candidates`/`sent`/`returned`/`omitted_before`/`omitted_after`, `latency_ms`, `usage_tokens` when reported). No keys, URLs, or vectors.
+- Outcomes: `ok`; `no_results` (no provider call); 503 `retrieval_not_ready` (missing/invalid configuration incl. empty `RERANK_API_KEY`); 502 `retrieval_upstream_error` (timeout, connection error, non-2xx, invalid reply); hybrid errors pass through. On failure no `results`; never hybrid order labelled as re-ranked.
+- Limitations: candidates outside the top `RERANK_CANDIDATE_LIMIT` are never seen; the re-ranker scores each passage independently against the question; scores are model-specific, uncalibrated, not comparable with fused scores or across questions, and there is no score cutoff; one extra provider call per request (latency, cost, rate limits); no retry, no fallback; the answer context cap (5 passages / 12,000 chars) still applies.
+
+Diagnostic (text truncated; merges returned and omitted records):
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question":"<q>","pattern":"hybrid-reranked","limit":5}' \
+  | jq '{status, t: .trace.rerank, r: [(.results[]|.+{kept:true}), (.omitted_candidates[]|.+{kept:false})] | map({section_id, kept, fr: .fused_rank, fs: .fused_score, rr: .rerank_rank, rs: .rerank_score, why: .omitted_reason, text: .text[:50]}) | sort_by(.fr)}'
+```
+
 ## Context and answer boundaries (Story 3.1)
 
 Modules: `generation/context.py`, `generation/answer.py`; called from `routes/query.py` when `pattern: "semantic"` and `generate_answer: true`.
 
-Flow: semantic retrieval result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, never cut mid-passage) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (30 s, no retries) → strict JSON parse → citations resolved from the supplied context only.
+Flow: real-mode (semantic, hybrid, hybrid-reranked) retrieval result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, never cut mid-passage) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (30 s, no retries) → strict JSON parse → citations resolved from the supplied context only.
 
 - Outcomes (`generation.outcome`): `answered` (text, claims, citations, supporting_passages), `insufficient_evidence` (also when retrieval is empty; no model call), `unavailable` (missing settings, timeout, connection error, non-2xx), `malformed` (non-JSON, missing `choices`, unknown label, claim without evidence, answered without text/claims). Non-answered outcomes have empty text and no claims/citations/passages.
 - HTTP 200 for all four; `status` stays the retrieval status and `results` are always returned. Messages and traces never contain the proxy URL, key, prompt text, or vectors; the model `reason` is kept in `generation.trace` only.

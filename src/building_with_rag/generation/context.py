@@ -1,4 +1,4 @@
-"""Bounded, labelled evidence context built from semantic or hybrid retrieval results."""
+"""Bounded, labelled evidence context built from the real retrieval modes (semantic, hybrid, hybrid-reranked)."""
 
 import time
 from dataclasses import dataclass, field

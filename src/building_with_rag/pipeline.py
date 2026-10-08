@@ -10,12 +10,15 @@ from building_with_rag.contracts import GenerationResult, QueryRequest, QueryRes
 from building_with_rag.generation.answer import Event, stream_answer
 from building_with_rag.registry import Pattern, run_pattern
 from building_with_rag.retrieval.hybrid import run_hybrid
+from building_with_rag.retrieval.rerank import run_hybrid_reranked
 from building_with_rag.retrieval.semantic import RetrievalError as QueryError
 from building_with_rag.retrieval.semantic import run_semantic
 
 __all__ = ["QueryError", "answer_events", "chat_pieces", "drain", "retrieve"]
 
-REAL_PATTERNS = frozenset({Pattern.SEMANTIC.value, Pattern.HYBRID.value})
+REAL_PATTERNS = frozenset(
+    {Pattern.SEMANTIC.value, Pattern.HYBRID.value, Pattern.HYBRID_RERANKED.value}
+)
 UNAVAILABLE_AFTER_TEXT = "Answer generation unavailable — the text above is an unchecked draft."
 UNAVAILABLE = "Answer generation unavailable."
 MAX_REASON_CHARS = 200
@@ -26,6 +29,8 @@ def retrieve(request: QueryRequest) -> QueryResult:
         return run_semantic(request)  # raises QueryError
     if request.pattern is Pattern.HYBRID:
         return run_hybrid(request)  # raises QueryError
+    if request.pattern is Pattern.HYBRID_RERANKED:
+        return run_hybrid_reranked(request)  # raises QueryError
     return QueryResult(**run_pattern(request.pattern, request.question, request.caller_id))
 
 
