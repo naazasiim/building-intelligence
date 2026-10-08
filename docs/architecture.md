@@ -42,7 +42,7 @@ One shared registry (single source of truth) holds only:
 | decomposition | `rag-decomposition` |
 | hyde | `rag-hyde` |
 
-`semantic` (Story 2.3), `hybrid` (Story 4.1) and `hybrid-reranked` (Story 4.2) are real on `POST /v1/query`; `rag-semantic`, `rag-hybrid` and `rag-hybrid-reranked` on chat run the same real path (Stories 3.2, 4.1, 4.2). Every other mode, on query and chat, still returns an honest `not_implemented` placeholder until its own story.
+`semantic` (Story 2.3), `hybrid` (Story 4.1), `hybrid-reranked` (Story 4.2) and `structured` (Story 5.1) are real on `POST /v1/query`; `rag-semantic`, `rag-hybrid`, `rag-hybrid-reranked` and `rag-structured` on chat run the same real path (Stories 3.2, 4.1, 4.2, 5.1). Every other mode, on query and chat, still returns an honest `not_implemented` placeholder until its own story.
 
 ## API contracts
 
@@ -61,7 +61,7 @@ The classroom seed may resolve only its fixed local demo caller, but keeps `call
 
 ### `QueryResult`
 
-- `pattern`, `status`, `message`, `trace`, `results`.
+- `pattern`, `status`, `message`, `trace`, `results`. `structured` adds `status` values `not_found`, `clarification_needed`, `recommendation`.
 - Optional `generation`.
 - Additive empty-by-default fields later modes use: `omitted_candidates` (used by `hybrid-reranked` for cut candidates), `subquestions`, `hyde_direct_candidates`, `hyde_query_candidates`, `hyde_hypothetical_text_debug`.
 - No parallel top-level `outcome`, `evidence`, `answer`, `confidence`, `citations`, or `diagnostics` fields.
@@ -73,7 +73,7 @@ A retrieved passage is always this shape: `chunk_id`, `section_id`, `act`, `text
 ### Endpoints
 
 - `GET /healthz` — safe, no credentials required.
-- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic`, `hybrid` and `hybrid-reranked`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
+- `POST /v1/query` — accepts `QueryRequest`, returns `QueryResult`: real retrieval for `semantic`, `hybrid`, `hybrid-reranked` and `structured`, a `not_implemented` placeholder per other mode via the shared `run_pattern` path.
 - `GET /v1/models` — lists the six `rag-<pattern>` model IDs.
 - `POST /v1/chat/completions` — OpenAI-compatible, text-only `ChatCompletionRequest`: `model`, `messages` with `system`/`developer`/`user`/`assistant` roles, `stream`, `n`, and optional strict `rag_options` (`pattern`, flat or nested `filters.{act,status}`, `limit`, `required_acts`, `chapter`).
 
@@ -150,11 +150,20 @@ curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
   | jq '{status, t: .trace.rerank, r: [(.results[]|.+{kept:true}), (.omitted_candidates[]|.+{kept:false})] | map({section_id, kept, fr: .fused_rank, fs: .fused_score, rr: .rerank_rank, rs: .rerank_score, why: .omitted_reason, text: .text[:50]}) | sort_by(.fr)}'
 ```
 
+## Structured exact retrieval (Story 5.1)
+
+Module `retrieval/structured.py`; `StructuredSignals` lives in `contracts.py`. `pattern: "structured"` runs: scope check → rule-based `classify` → one read-only `find_one` on `sections`. No LLM, embedding or index; no fallback to or from other modes.
+
+- **Exact-input contract:** only classifier output (validated `act`, integer `section_number` 1–999, optional validated `chapter`) plus server filters (`access_level`, optional `act`/`status` narrowing) reach MongoDB. Raw question text never does. Classified: `BNS`/`IPC` (or full names) + `section N`/`sec. N`/`s. N`/`§N`. Refused with `clarification_needed`: missing act, both acts, several numbers, non-integer or out-of-range numbers. `filter` and `aggregation` questions and anything else return `recommendation`, no MongoDB call. Invalid `chapter` → 422 `unsupported_option`.
+- **Outcomes:** `ok` (one `RetrievedChunk`, `chunk_id = section_id`, `score = 1.0` = exact match, not similarity), `not_found` (this corpus has no such record, not a claim about the law), `clarification_needed`, `recommendation`; 503 `retrieval_not_ready` (no `MONGODB_URI`, only when a lookup is needed), 502 `retrieval_upstream_error`.
+- **Answer boundary:** retrieval returns the exact record. Explanation only via the existing grounded-answer path (`generate_answer` or chat), and only for `ok`. `not_found`/`clarification_needed`/`recommendation` never produce an answer; chat shows `message`. `status` and `source_status_version` are source metadata, not current legal applicability.
+- **Limitations:** integer sections only (no `103A`); no multi-section or cross-act comparison; filter/aggregation recognised but not executed; IPC sections 4, 5, 18, 34, 40, 75, 161–165 absent from `sections`; rule-based phrasing misses; a section over the 12,000-char context cap gives `insufficient_evidence` when answering (direct inspection still returns it).
+
 ## Context and answer boundaries (Story 3.1)
 
 Modules: `generation/context.py`, `generation/answer.py`; called from `routes/query.py` when `pattern: "semantic"` and `generate_answer: true`.
 
-Flow: real-mode (semantic, hybrid, hybrid-reranked) retrieval result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, never cut mid-passage) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (30 s, no retries) → strict JSON parse → citations resolved from the supplied context only.
+Flow: real-mode (semantic, hybrid, hybrid-reranked, structured with `status: ok`) retrieval result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, never cut mid-passage) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (30 s, no retries) → strict JSON parse → citations resolved from the supplied context only.
 
 - Outcomes (`generation.outcome`): `answered` (text, claims, citations, supporting_passages), `insufficient_evidence` (also when retrieval is empty; no model call), `unavailable` (missing settings, timeout, connection error, non-2xx), `malformed` (non-JSON, missing `choices`, unknown label, claim without evidence, answered without text/claims). Non-answered outcomes have empty text and no claims/citations/passages.
 - HTTP 200 for all four; `status` stays the retrieval status and `results` are always returned. Messages and traces never contain the proxy URL, key, prompt text, or vectors; the model `reason` is kept in `generation.trace` only.

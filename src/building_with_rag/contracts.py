@@ -147,6 +147,19 @@ class QueryResult(BaseModel):
     hyde_hypothetical_text_debug: str | None = None
 
 
+class StructuredSignals(BaseModel):
+    """Story 5.1: validated output of the rule-based classifier; the only input to the exact lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["exact_lookup", "filter", "aggregation"] | None = None
+    act: Literal["BNS_2023", "IPC_1860"] | None = None
+    section_number: int | None = Field(default=None, ge=1, le=999)
+    chapter: str | None = None
+    status: Literal["ok", "recommendation", "clarification_needed"]
+    reason: str
+
+
 class ChatFilters(BaseModel):
     """Nested filters as sent by the Open WebUI Pipe."""
 
